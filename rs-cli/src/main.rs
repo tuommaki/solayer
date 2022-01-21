@@ -15,12 +15,15 @@ use {
     solana_program::{instruction::Instruction, pubkey::Pubkey},
     solana_sdk::{
         commitment_config::CommitmentConfig,
+        hash::Hash,
         signature::{Signature, Signer},
         signer::keypair::Keypair,
+        signers::Signers,
         transaction::Transaction,
     },
     solayer::instruction::SolayerInstruction,
     std::process::exit,
+    std::str::FromStr,
 };
 
 // Unsure where this comes from
@@ -93,6 +96,19 @@ fn main() {
                         .help("Message to Sign"),
                 ),
         )
+        .subcommand(
+            SubCommand::with_name("verify_proof")
+                .about("Call native Aleo Proof Verifier program")
+                .arg(
+                    Arg::with_name("keypair")
+                        .long("keypair")
+                        .validator(is_keypair)
+                        .value_name("KEYPAIR")
+                        .takes_value(true)
+                        .required(true)
+                        .help("Signer keypair path"),
+                ),
+        )
         .get_matches();
     let mut wallet_manager = None;
     let config = {
@@ -117,11 +133,14 @@ fn main() {
             exit(1);
         });
 
-        let solayer_program_id =
-            Pubkey::new(matches.value_of("solayer_program_id").unwrap().as_bytes());
+        let solayer_program_id = Pubkey::new(
+            &bs58::decode(matches.value_of("solayer_program_id").unwrap())
+                .into_vec()
+                .unwrap(),
+        );
 
         Config {
-            rpc_client: RpcClient::new_with_commitment(json_rpc_url, CommitmentConfig::confirmed()),
+            rpc_client: RpcClient::new(json_rpc_url), //, CommitmentConfig::confirmed()),
             fee_payer,
             solayer_program_id,
         }
@@ -134,6 +153,11 @@ fn main() {
             let msg = msg_str.as_bytes();
             let signature = keypair.sign_message(msg);
             command_verify(&config, keypair, signature, msg)
+        }
+        ("verify_proof", Some(arg_matches)) => {
+            let keypair = keypair_of(arg_matches, "keypair").unwrap();
+            let signers: Vec<&dyn Signer> = vec![&keypair];
+            command_verify_proof(&config, &signers)
         }
         _ => unreachable!(),
     }
@@ -166,10 +190,35 @@ pub fn command_verify(
     Ok(())
 }
 
+pub fn command_verify_proof<T: Signers>(config: &Config, signing_keypairs: &T) -> CommandResult {
+    let ix = Instruction {
+        program_id: Pubkey::from_str("A1eoProof1111111111111111111111111111111111")
+            .expect("failed to set program_id"),
+        accounts: vec![],
+        data: vec![],
+    };
+
+    let latest_blockhash = config
+        .rpc_client
+        .get_latest_blockhash()
+        .expect("failed to fetch latest blockhash");
+
+    let transaction = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&config.fee_payer.pubkey()),
+        signing_keypairs,
+        latest_blockhash,
+    );
+
+    send_transaction(config, transaction)?;
+    Ok(())
+}
+
 fn send_transaction(
     config: &Config,
     transaction: Transaction,
 ) -> solana_client::client_error::Result<()> {
+    println!("Sending transaction...");
     let signature = config
         .rpc_client
         .send_and_confirm_transaction_with_spinner(&transaction)?;
