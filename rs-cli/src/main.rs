@@ -12,7 +12,11 @@ use {
         keypair::signer_from_path,
     },
     solana_client::rpc_client::RpcClient,
-    solana_program::{instruction::Instruction, pubkey::Pubkey},
+    solana_program::{
+        instruction::{AccountMeta, Instruction},
+        message::Message,
+        pubkey::Pubkey,
+    },
     solana_sdk::{
         commitment_config::CommitmentConfig,
         hash::Hash,
@@ -39,6 +43,8 @@ pub struct Config {
 }
 
 fn main() {
+    solana_logger::setup_with("solana=debug");
+
     let matches = App::new(crate_name!())
         .about(crate_description!())
         .version(crate_version!())
@@ -156,8 +162,7 @@ fn main() {
         }
         ("verify_proof", Some(arg_matches)) => {
             let keypair = keypair_of(arg_matches, "keypair").unwrap();
-            let signers: Vec<&dyn Signer> = vec![&keypair];
-            command_verify_proof(&config, &signers)
+            command_verify_proof(&config, &keypair)
         }
         _ => unreachable!(),
     }
@@ -190,25 +195,27 @@ pub fn command_verify(
     Ok(())
 }
 
-pub fn command_verify_proof<T: Signers>(config: &Config, signing_keypairs: &T) -> CommandResult {
-    let ix = Instruction {
-        program_id: Pubkey::from_str("A1eoProof1111111111111111111111111111111111")
-            .expect("failed to set program_id"),
-        accounts: vec![],
-        data: vec![],
-    };
+pub fn command_verify_proof(config: &Config, keypair: &Keypair) -> CommandResult {
+    let program_id = Pubkey::from_str("A1eoProof1111111111111111111111111111111111")
+        .expect("failed to set program_id");
+
+    let dest_pubkey = Pubkey::create_with_seed(&keypair.pubkey(), "my fuzzy seed", &program_id)?;
+    let instruction = Instruction::new_with_bytes(
+        program_id,
+        &[],
+        vec![
+            AccountMeta::new(keypair.pubkey(), true),
+            AccountMeta::new(dest_pubkey, false),
+        ],
+    );
 
     let latest_blockhash = config
         .rpc_client
         .get_latest_blockhash()
         .expect("failed to fetch latest blockhash");
 
-    let transaction = Transaction::new_signed_with_payer(
-        &[ix],
-        Some(&config.fee_payer.pubkey()),
-        signing_keypairs,
-        latest_blockhash,
-    );
+    let message = Message::new(&[instruction], Some(&keypair.pubkey()));
+    let transaction = Transaction::new(&[keypair], message, latest_blockhash);
 
     send_transaction(config, transaction)?;
     Ok(())
